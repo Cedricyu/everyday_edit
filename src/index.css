@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Georgia, "Times New Roman", serif;
+  color: #1f1811;
+  background:
+    radial-gradient(circle at top left, rgba(231, 188, 138, 0.18), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(140, 168, 136, 0.18), transparent 28%),
+    linear-gradient(180deg, #f8f3ea 0%, #efe4d4 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  color: #1f1811;
+  background: transparent;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
