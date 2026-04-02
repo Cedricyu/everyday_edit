@@ -9,17 +9,29 @@ export default function SlideBar({
   title = "unknown",
   onValueChange = () => {},
   backgroundType = "",
+  commitOnRelease = false,
+  formatValue = null,
 }) {
   const [value, setValue] = useState(initialData);
   const didMountRef = useRef(false);
 
   useEffect(() => {
+    setValue(initialData);
+  }, [initialData]);
+
+  useEffect(() => {
+    if (commitOnRelease) return;
     if (!didMountRef.current) {
       didMountRef.current = true;
       return;
     }
     onValueChange(value);
-  }, [value]);
+  }, [commitOnRelease, value]);
+
+  const commitValue = () => {
+    if (!commitOnRelease) return;
+    onValueChange(value);
+  };
 
   const getBackgroundClass = () => {
     switch (backgroundType) {
@@ -32,17 +44,22 @@ export default function SlideBar({
     }
   };
 
+  const displayValue = formatValue ? formatValue(value) : value;
+
   return (
     <div className="slider-card">
       <div className="slider-card-head">
         <label htmlFor={title} className="slider-title">
           {title}
         </label>
-        <span className="slider-value">{value}</span>
+        <span className="slider-value">{displayValue}</span>
       </div>
       <input
         id={title}
         onChange={(event) => setValue(parseFloat(event.target.value))}
+        onPointerUp={commitValue}
+        onKeyUp={commitValue}
+        onBlur={commitValue}
         type="range"
         min={min}
         max={max}
@@ -51,8 +68,8 @@ export default function SlideBar({
         className={`slider ${getBackgroundClass()}`}
       />
       <div className="slider-scale">
-        <span>{min}</span>
-        <span>{max}</span>
+        <span>{formatValue ? formatValue(min) : min}</span>
+        <span>{formatValue ? formatValue(max) : max}</span>
       </div>
     </div>
   );

@@ -11,6 +11,9 @@ import filter from "./js/filter.js";
 import "./page.css";
 
 const DEBUG = 0;
+const BASE_COLOR_TEMPERATURE = 6500;
+const MIN_COLOR_TEMPERATURE = 4500;
+const MAX_COLOR_TEMPERATURE = 8500;
 
 function RefreshIcon() {
   return (
@@ -36,6 +39,22 @@ function ExportIcon() {
   );
 }
 
+function CompareIcon() {
+  return (
+    <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24">
+      <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M4 5h7v14H4V5Zm9 0h7v14h-7V5Z" />
+    </svg>
+  );
+}
+
+function UndoIcon() {
+  return (
+    <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24">
+      <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M9 14 4 9m0 0 5-5M4 9h9a7 7 0 1 1 0 14h-1" />
+    </svg>
+  );
+}
+
 export default function App() {
   const [src, setSrc] = useState(null);
   const [currentMat, setCurrentMat] = useState(null);
@@ -44,10 +63,14 @@ export default function App() {
   const [saturation, setSaturation] = useState(1);
   const [shadow, setShadow] = useState(1);
   const [light, setLight] = useState(1);
-  const [tempature, setTempature] = useState(1);
+  const [tempature, setTempature] = useState(BASE_COLOR_TEMPERATURE);
   const [imageList, setImageList] = useState([]);
   const [histogramReady, setHistogramReady] = useState(false);
   const [levelsRange, setLevelsRange] = useState({ black: 0, white: 255 });
+  const [editedPreviewUrl, setEditedPreviewUrl] = useState(null);
+  const [compareMode, setCompareMode] = useState(false);
+  const [historyStack, setHistoryStack] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
   const canvasRef = useRef(null);
   const histCanvas = useRef(null);
   const levelsBaseImageRef = useRef(null);
@@ -90,6 +113,28 @@ export default function App() {
   const resetLevels = () => {
     setLevelsRange({ black: 0, white: 255 });
     captureLevelsBaseImage();
+  };
+
+  const syncCanvasSnapshot = (pushHistory = true) => {
+    if (!canvasRef.current || !canvasRef.current.width || !canvasRef.current.height) return;
+
+    const snapshot = canvasRef.current.toDataURL("image/png");
+    setEditedPreviewUrl(snapshot);
+
+    if (!pushHistory) return;
+
+    setHistoryStack((previousHistory) => {
+      const truncatedHistory =
+        historyIndex >= 0 ? previousHistory.slice(0, historyIndex + 1) : previousHistory;
+
+      if (truncatedHistory[truncatedHistory.length - 1] === snapshot) {
+        return truncatedHistory;
+      }
+
+      const nextHistory = [...truncatedHistory, snapshot];
+      setHistoryIndex(nextHistory.length - 1);
+      return nextHistory;
+    });
   };
 
   const drawHistogramHandles = (ctx, width, height) => {
@@ -192,6 +237,10 @@ export default function App() {
       resetLevels();
       const mat = cv.imread(canvas);
       replaceCurrentMat(mat);
+      const snapshot = canvas.toDataURL("image/png");
+      setEditedPreviewUrl(snapshot);
+      setHistoryStack([snapshot]);
+      setHistoryIndex(0);
     };
     img.src = src;
   }, [src]);
@@ -212,6 +261,7 @@ export default function App() {
       resetLevels();
       const mat = cv.imread(canvas);
       replaceCurrentMat(mat);
+      syncCanvasSnapshot(false);
     };
     img.src = image;
   };
@@ -258,8 +308,21 @@ export default function App() {
     setSaturation(1);
     setShadow(1);
     setLight(1);
-    setTempature(1);
+    setTempature(BASE_COLOR_TEMPERATURE);
+    setCompareMode(false);
     refresh();
+  };
+
+  const handleUndo = () => {
+    if (historyIndex <= 0) return;
+
+    const previousIndex = historyIndex - 1;
+    const previousSnapshot = historyStack[previousIndex];
+    if (!previousSnapshot) return;
+
+    setHistoryIndex(previousIndex);
+    setEditedPreviewUrl(previousSnapshot);
+    redrawImage(previousSnapshot);
   };
 
   const handleExport = () => {
@@ -276,6 +339,7 @@ export default function App() {
       cv.imshow(canvasRef.current, nextMat);
       resetLevels();
       replaceCurrentMat(nextMat);
+      syncCanvasSnapshot();
     } catch (error) {
       console.error("Failed to display image on canvas:", error);
     }
@@ -311,6 +375,7 @@ export default function App() {
     try {
       const mat = cv.imread(canvas);
       replaceCurrentMat(mat);
+      syncCanvasSnapshot(false);
     } catch (error) {
       console.error("Failed to update canvas levels:", error);
     }
@@ -364,7 +429,8 @@ export default function App() {
 
   const handleTempature = (tempatureValue) => {
     if (!hasRenderableImage()) return;
-    const dst = filter.adjustColorTemperature(currentMat, tempatureValue - tempature);
+    const kelvinDelta = (tempatureValue - tempature) / 100;
+    const dst = filter.adjustColorTemperature(currentMat, kelvinDelta);
     setTempature(tempatureValue);
     applyAndRender(dst);
   };
@@ -405,9 +471,10 @@ export default function App() {
     cv.cvtColor(dst, dst, cv.COLOR_HSV2RGB, 4);
     try {
       cv.imshow(canvas, dst);
-      setCurrentMat(dst);
+      replaceCurrentMat(dst);
     } catch (error) {
       console.error("Failed to display image on canvas:", error);
+      dst.delete();
     }
     hsvMat.delete();
     lutWeaken.delete();
@@ -427,9 +494,10 @@ export default function App() {
     try {
       cv.addWeighted(currentMat, 1.0, dstMat, shadowValue, 0, dstMat);
       cv.imshow(canvasRef.current, dstMat);
-      setCurrentMat(dstMat);
+      replaceCurrentMat(dstMat);
     } catch (error) {
       console.error("Failed to display image on canvas:", error);
+      dstMat.delete();
     } finally {
       grayscaleMat.delete();
       thresholdMat.delete();
@@ -448,9 +516,10 @@ export default function App() {
     try {
       cv.addWeighted(currentMat, 1.0, dstMat, lightValue, 0, dstMat);
       cv.imshow(canvasRef.current, dstMat);
-      setCurrentMat(dstMat);
+      replaceCurrentMat(dstMat);
     } catch (error) {
       console.error("Failed to display image on canvas:", error);
+      dstMat.delete();
     } finally {
       grayscaleMat.delete();
       thresholdMat.delete();
@@ -467,20 +536,20 @@ export default function App() {
   ];
 
   const sliderColor = [
-    { min: 0.8, max: 1.2, step: 0.01, title: "Saturation", initialData: 1, backgroundType: "greenToPurple", onValueChange: handleColorSaturation },
-    { min: -20, max: 20, step: 0.5, title: "Temperature", initialData: 0, backgroundType: "blueToYellow", onValueChange: handleTempature },
+    { min: 0.8, max: 1.2, step: 0.01, title: "Saturation", initialData: 1, backgroundType: "greenToPurple", onValueChange: handleColorSaturation, commitOnRelease: true },
+    { min: MIN_COLOR_TEMPERATURE, max: MAX_COLOR_TEMPERATURE, step: 100, title: "Temperature", initialData: BASE_COLOR_TEMPERATURE, backgroundType: "blueToYellow", onValueChange: handleTempature, commitOnRelease: true, formatValue: (value) => `${Math.round(value)} K` },
   ];
 
   const sliderLight = [
-    { min: -50, max: 50, step: 5, title: "Brightness", initialData: 0, onValueChange: handleBrightness },
-    { min: -125, max: 125, step: 5, title: "Contrast", initialData: 0, onValueChange: handleContrast },
-    { min: -0.5, max: 0.5, step: 0.01, title: "Shadow", initialData: 0, onValueChange: handleShadow },
-    { min: -0.5, max: 0.5, step: 0.01, title: "Highlight", initialData: 0, onValueChange: handleLight },
+    { min: -50, max: 50, step: 5, title: "Brightness", initialData: 0, onValueChange: handleBrightness, commitOnRelease: true },
+    { min: -125, max: 125, step: 5, title: "Contrast", initialData: 0, onValueChange: handleContrast, commitOnRelease: true },
+    { min: -0.5, max: 0.5, step: 0.01, title: "Shadow", initialData: 0, onValueChange: handleShadow, commitOnRelease: true },
+    { min: -0.5, max: 0.5, step: 0.01, title: "Highlight", initialData: 0, onValueChange: handleLight, commitOnRelease: true },
   ];
 
   const stats = [
     { label: "Filters", value: filters.length },
-    { label: "Variants", value: imageList.length },
+    { label: "History", value: Math.max(historyIndex + 1, 0) },
     { label: "Canvas", value: src ? "Live" : "Idle" },
   ];
 
@@ -532,7 +601,21 @@ export default function App() {
                 <IconButton label="Refresh" description="Reload the current source frame" onClick={refresh}><RefreshIcon /></IconButton>
                 <IconButton label="Reset" description="Return to the original uploaded state" onClick={handleReset}><ResetIcon /></IconButton>
                 <IconButton label="Export" description="Save the current canvas as PNG" onClick={handleExport}><ExportIcon /></IconButton>
+                <IconButton label="Compare" description="Toggle before and after view" onClick={() => setCompareMode((value) => !value)}><CompareIcon /></IconButton>
+                <IconButton label="Undo" description="Step back through edit history" onClick={handleUndo}><UndoIcon /></IconButton>
               </div>
+              {compareMode && src && editedPreviewUrl && (
+                <div className="compare-grid">
+                  <div className="compare-panel">
+                    <span className="compare-label">Before</span>
+                    <img src={src} alt="Original source" className="compare-image" />
+                  </div>
+                  <div className="compare-panel">
+                    <span className="compare-label">After</span>
+                    <img src={editedPreviewUrl} alt="Edited result" className="compare-image" />
+                  </div>
+                </div>
+              )}
             </div>
             <div className="surface-panel">
               <div className="surface-panel-head compact">
@@ -619,14 +702,14 @@ export default function App() {
                 <Collapse title="Color" description="Shift hue energy and warmth with subtle control." defaultOpen>
                   <div className="slider-stack">
                     {sliderColor.map((slider, index) => (
-                      <SlideBar key={index} min={slider.min} max={slider.max} step={slider.step} initialData={slider.initialData} title={slider.title} onValueChange={slider.onValueChange} backgroundType={slider.backgroundType} />
+                      <SlideBar key={index} min={slider.min} max={slider.max} step={slider.step} initialData={slider.initialData} title={slider.title} onValueChange={slider.onValueChange} backgroundType={slider.backgroundType} commitOnRelease={slider.commitOnRelease} formatValue={slider.formatValue} />
                     ))}
                   </div>
                 </Collapse>
                 <Collapse title="Lighting" description="Shape contrast and perceived depth." defaultOpen>
                   <div className="slider-stack">
                     {sliderLight.map((slider, index) => (
-                      <SlideBar key={index} min={slider.min} max={slider.max} step={slider.step} initialData={slider.initialData} title={slider.title} onValueChange={slider.onValueChange} />
+                      <SlideBar key={index} min={slider.min} max={slider.max} step={slider.step} initialData={slider.initialData} title={slider.title} onValueChange={slider.onValueChange} commitOnRelease={slider.commitOnRelease} />
                     ))}
                   </div>
                 </Collapse>

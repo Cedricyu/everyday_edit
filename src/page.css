@@ -215,9 +215,41 @@
 
 .canvas-toolbar {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 0.9rem;
   margin-top: 1rem;
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin-top: 1rem;
+}
+
+.compare-panel {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.85rem;
+  border-radius: 20px;
+  background: rgba(255, 251, 245, 0.92);
+  border: 1px solid rgba(94, 72, 43, 0.1);
+}
+
+.compare-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8b6f4e;
+}
+
+.compare-image {
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 16px;
+  background: #f3eadc;
 }
 
 .tool-button {
@@ -556,6 +588,10 @@
   }
 
   .canvas-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .compare-grid {
     grid-template-columns: 1fr;
   }
 
