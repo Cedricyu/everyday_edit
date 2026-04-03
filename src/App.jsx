@@ -14,6 +14,13 @@ const DEBUG = 0;
 const BASE_COLOR_TEMPERATURE = 6500;
 const MIN_COLOR_TEMPERATURE = 4500;
 const MAX_COLOR_TEMPERATURE = 8500;
+const DEFAULT_IMAGES = Object.values(
+  import.meta.glob("../public/demo/*.{png,jpg,jpeg,webp,avif}", {
+    eager: true,
+    query: "?url",
+    import: "default",
+  }),
+).sort();
 
 function RefreshIcon() {
   return (
@@ -57,14 +64,15 @@ function UndoIcon() {
 
 export default function App() {
   const [src, setSrc] = useState(null);
+  const [baseMat, setBaseMat] = useState(null);
   const [currentMat, setCurrentMat] = useState(null);
-  const [brightness, setBrightness] = useState(1);
-  const [contrast, setContrast] = useState(127);
+  const [brightness, setBrightness] = useState(0);
+  const [contrast, setContrast] = useState(0);
   const [saturation, setSaturation] = useState(1);
-  const [shadow, setShadow] = useState(1);
-  const [light, setLight] = useState(1);
+  const [shadow, setShadow] = useState(0);
+  const [light, setLight] = useState(0);
   const [tempature, setTempature] = useState(BASE_COLOR_TEMPERATURE);
-  const [imageList, setImageList] = useState([]);
+  const [imageList, setImageList] = useState(DEFAULT_IMAGES);
   const [histogramReady, setHistogramReady] = useState(false);
   const [levelsRange, setLevelsRange] = useState({ black: 0, white: 255 });
   const [editedPreviewUrl, setEditedPreviewUrl] = useState(null);
@@ -86,6 +94,88 @@ export default function App() {
       }
       return nextMat;
     });
+  };
+
+  const replaceBaseMat = (nextMat) => {
+    setBaseMat((previousMat) => {
+      if (previousMat && previousMat !== nextMat) {
+        try {
+          previousMat.delete();
+        } catch {
+          // Ignore stale wasm handles.
+        }
+      }
+      return nextMat;
+    });
+  };
+
+  const buildAdjustmentState = (overrides = {}) => ({
+    brightness: overrides.brightness ?? brightness,
+    contrast: overrides.contrast ?? contrast,
+    saturation: overrides.saturation ?? saturation,
+    shadow: overrides.shadow ?? shadow,
+    light: overrides.light ?? light,
+    tempature: overrides.tempature ?? tempature,
+    levelsRange: overrides.levelsRange ?? { ...levelsRange },
+  });
+
+  const applyAdjustmentState = (state) => {
+    if (!state) return;
+    setBrightness(state.brightness ?? 0);
+    setContrast(state.contrast ?? 0);
+    setSaturation(state.saturation ?? 1);
+    setShadow(state.shadow ?? 0);
+    setLight(state.light ?? 0);
+    setTempature(state.tempature ?? BASE_COLOR_TEMPERATURE);
+    if (state.levelsRange) {
+      setLevelsRange({
+        black: state.levelsRange.black ?? 0,
+        white: state.levelsRange.white ?? 255,
+      });
+    }
+  };
+
+  const commitMat = (nextMat, { pushHistory = true, syncLevels = true, adjustmentState = null } = {}) => {
+    if (!nextMat || nextMat.empty()) return;
+
+    const committedMat = nextMat.clone();
+    replaceBaseMat(committedMat);
+    replaceCurrentMat(nextMat);
+
+    if (syncLevels) {
+      resetLevels();
+    }
+
+    syncCanvasSnapshot(pushHistory, adjustmentState);
+  };
+
+  const loadImageToCanvas = (image, onLoad) => {
+    if (!canvasRef.current || !image) return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    const img = new Image();
+
+    img.onload = () => {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+      onLoad?.(canvas, img);
+    };
+
+    img.src = image;
+  };
+
+  const createMatFromImageData = (imageData) => {
+    if (cv.matFromImageData) {
+      return cv.matFromImageData(imageData);
+    }
+
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = imageData.width;
+    tempCanvas.height = imageData.height;
+    tempCanvas.getContext("2d").putImageData(imageData, 0, 0);
+    return cv.imread(tempCanvas);
   };
 
   const hasRenderableImage = () => {
@@ -115,7 +205,7 @@ export default function App() {
     captureLevelsBaseImage();
   };
 
-  const syncCanvasSnapshot = (pushHistory = true) => {
+  const syncCanvasSnapshot = (pushHistory = true, adjustmentState = null) => {
     if (!canvasRef.current || !canvasRef.current.width || !canvasRef.current.height) return;
 
     const snapshot = canvasRef.current.toDataURL("image/png");
@@ -127,11 +217,18 @@ export default function App() {
       const truncatedHistory =
         historyIndex >= 0 ? previousHistory.slice(0, historyIndex + 1) : previousHistory;
 
-      if (truncatedHistory[truncatedHistory.length - 1] === snapshot) {
+      const previousEntry = truncatedHistory[truncatedHistory.length - 1];
+      if (previousEntry?.snapshot === snapshot) {
         return truncatedHistory;
       }
 
-      const nextHistory = [...truncatedHistory, snapshot];
+      const nextHistory = [
+        ...truncatedHistory,
+        {
+          snapshot,
+          adjustments: adjustmentState ?? buildAdjustmentState(),
+        },
+      ];
       setHistoryIndex(nextHistory.length - 1);
       return nextHistory;
     });
@@ -218,7 +315,14 @@ export default function App() {
   };
 
   useEffect(() => {
-    cv.onRuntimeInitialized = () => replaceCurrentMat(new cv.Mat());
+    cv.onRuntimeInitialized = () => {
+      replaceBaseMat(new cv.Mat());
+      replaceCurrentMat(new cv.Mat());
+    };
+  }, []);
+
+  useEffect(() => {
+    setImageList(DEFAULT_IMAGES);
   }, []);
 
   useEffect(() => {
@@ -226,23 +330,20 @@ export default function App() {
       drawDefaultBackground(() => setHistogramReady(true));
       return;
     }
-    if (!canvasRef.current) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-    const img = new Image();
-    img.onload = () => {
-      canvas.width = img.width;
-      canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
+    loadImageToCanvas(src, (canvas) => {
       resetLevels();
       const mat = cv.imread(canvas);
-      replaceCurrentMat(mat);
+      commitMat(mat, { pushHistory: false });
       const snapshot = canvas.toDataURL("image/png");
       setEditedPreviewUrl(snapshot);
-      setHistoryStack([snapshot]);
+      setHistoryStack([
+        {
+          snapshot,
+          adjustments: buildAdjustmentState(),
+        },
+      ]);
       setHistoryIndex(0);
-    };
-    img.src = src;
+    });
   }, [src]);
 
   useEffect(() => {
@@ -250,20 +351,11 @@ export default function App() {
   }, [currentMat]);
 
   const redrawImage = (image) => {
-    if (!canvasRef.current || !image) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-    const img = new Image();
-    img.onload = () => {
-      canvas.width = img.width;
-      canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
+    loadImageToCanvas(image, (canvas) => {
       resetLevels();
       const mat = cv.imread(canvas);
-      replaceCurrentMat(mat);
-      syncCanvasSnapshot(false);
-    };
-    img.src = image;
+      commitMat(mat, { pushHistory: false });
+    });
   };
 
   const loadMatFromImage = (image) =>
@@ -273,15 +365,14 @@ export default function App() {
         return;
       }
 
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext("2d");
       const img = new Image();
 
       img.onload = () => {
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
-        resolve(cv.imread(canvas));
+        const tempCanvas = document.createElement("canvas");
+        tempCanvas.width = img.width;
+        tempCanvas.height = img.height;
+        tempCanvas.getContext("2d").drawImage(img, 0, 0);
+        resolve(cv.imread(tempCanvas));
       };
 
       img.onerror = () => {
@@ -303,11 +394,11 @@ export default function App() {
   };
 
   const handleReset = () => {
-    setBrightness(1);
-    setContrast(127);
+    setBrightness(0);
+    setContrast(0);
     setSaturation(1);
-    setShadow(1);
-    setLight(1);
+    setShadow(0);
+    setLight(0);
     setTempature(BASE_COLOR_TEMPERATURE);
     setCompareMode(false);
     refresh();
@@ -317,12 +408,13 @@ export default function App() {
     if (historyIndex <= 0) return;
 
     const previousIndex = historyIndex - 1;
-    const previousSnapshot = historyStack[previousIndex];
-    if (!previousSnapshot) return;
+    const previousEntry = historyStack[previousIndex];
+    if (!previousEntry?.snapshot) return;
 
     setHistoryIndex(previousIndex);
-    setEditedPreviewUrl(previousSnapshot);
-    redrawImage(previousSnapshot);
+    setEditedPreviewUrl(previousEntry.snapshot);
+    applyAdjustmentState(previousEntry.adjustments);
+    redrawImage(previousEntry.snapshot);
   };
 
   const handleExport = () => {
@@ -333,13 +425,24 @@ export default function App() {
     link.click();
   };
 
-  const applyAndRender = (nextMat) => {
+  const renderCompareFrame = (showOriginal) => {
+    if (!canvasRef.current || !src) return;
+
+    if (showOriginal) {
+      loadImageToCanvas(src, () => {});
+      return;
+    }
+
+    if (currentMat && !currentMat.empty()) {
+      cv.imshow(canvasRef.current, currentMat);
+    }
+  };
+
+  const applyAndRender = (nextMat, adjustmentState = null) => {
     if (!canvasRef.current || !nextMat || nextMat.empty()) return;
     try {
       cv.imshow(canvasRef.current, nextMat);
-      resetLevels();
-      replaceCurrentMat(nextMat);
-      syncCanvasSnapshot();
+      commitMat(nextMat, { adjustmentState });
     } catch (error) {
       console.error("Failed to display image on canvas:", error);
     }
@@ -373,9 +476,14 @@ export default function App() {
     ctx.putImageData(adjusted, 0, 0);
 
     try {
-      const mat = cv.imread(canvas);
-      replaceCurrentMat(mat);
-      syncCanvasSnapshot(false);
+      const mat = createMatFromImageData(adjusted);
+      commitMat(mat, {
+        pushHistory: false,
+        syncLevels: false,
+        adjustmentState: buildAdjustmentState({
+          levelsRange: { black, white },
+        }),
+      });
     } catch (error) {
       console.error("Failed to update canvas levels:", error);
     }
@@ -428,39 +536,41 @@ export default function App() {
   };
 
   const handleTempature = (tempatureValue) => {
-    if (!hasRenderableImage()) return;
+    if (!baseMat || baseMat.empty()) return;
     const kelvinDelta = (tempatureValue - tempature) / 100;
-    const dst = filter.adjustColorTemperature(currentMat, kelvinDelta);
+    const dst = filter.adjustColorTemperature(baseMat, kelvinDelta);
     setTempature(tempatureValue);
-    applyAndRender(dst);
+    applyAndRender(dst, buildAdjustmentState({ tempature: tempatureValue }));
   };
 
   const handleBrightness = (newBrightness) => {
-    if (!hasRenderableImage()) return;
+    if (!baseMat || baseMat.empty()) return;
     const dstMat = new cv.Mat();
-    currentMat.convertTo(dstMat, -1, 1, newBrightness - brightness);
+    baseMat.convertTo(dstMat, -1, 1, newBrightness - brightness);
     if (dstMat.empty()) return;
-    applyAndRender(dstMat);
     setBrightness(newBrightness);
+    applyAndRender(dstMat, buildAdjustmentState({ brightness: newBrightness }));
   };
 
   const handleContrast = (contrastValue) => {
-    if (!hasRenderableImage()) return;
+    if (!baseMat || baseMat.empty()) return;
     const dst = new cv.Mat();
     const normalized = contrastValue / 255.0;
     const k = Math.tan(((45 + 44 * normalized) * Math.PI) / 180);
-    currentMat.convertTo(dst, cv.CV_8U, k, 127.5 * -k + 127.5);
-    applyAndRender(dst);
+    baseMat.convertTo(dst, cv.CV_8U, k, 127.5 * -k + 127.5);
     setContrast(contrastValue);
+    applyAndRender(dst, buildAdjustmentState({ contrast: contrastValue }));
   };
 
   const handleColorSaturation = (saturationValue) => {
-    if (!hasRenderableImage()) return;
+    if (!baseMat || baseMat.empty()) return;
     const canvas = canvasRef.current;
     const hsvMat = new cv.Mat();
-    cv.cvtColor(currentMat, hsvMat, cv.COLOR_RGB2HSV, 4);
+    cv.cvtColor(baseMat, hsvMat, cv.COLOR_RGB2HSV, 4);
     const lutWeaken = new cv.Mat(256, 1, cv.CV_8UC1);
-    for (let i = 0; i < 256; i += 1) lutWeaken.data[i] = Math.max(Math.min(255, i * saturationValue), 0);
+    for (let i = 0; i < 256; i += 1) {
+      lutWeaken.data[i] = Math.max(Math.min(255, i * saturationValue), 0);
+    }
     const channels = new cv.MatVector();
     cv.split(hsvMat, channels);
     const tmp = new cv.Mat();
@@ -471,7 +581,9 @@ export default function App() {
     cv.cvtColor(dst, dst, cv.COLOR_HSV2RGB, 4);
     try {
       cv.imshow(canvas, dst);
-      replaceCurrentMat(dst);
+      commitMat(dst, {
+        adjustmentState: buildAdjustmentState({ saturation: saturationValue }),
+      });
     } catch (error) {
       console.error("Failed to display image on canvas:", error);
       dst.delete();
@@ -484,17 +596,19 @@ export default function App() {
   };
 
   const handleShadow = (shadowValue) => {
-    if (!hasRenderableImage()) return;
+    if (!baseMat || baseMat.empty()) return;
     const grayscaleMat = new cv.Mat();
-    cv.cvtColor(currentMat, grayscaleMat, cv.COLOR_RGBA2GRAY, 4);
+    cv.cvtColor(baseMat, grayscaleMat, cv.COLOR_RGBA2GRAY, 4);
     const thresholdMat = new cv.Mat();
     cv.adaptiveThreshold(grayscaleMat, thresholdMat, 200, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, 999, 2);
     const dstMat = new cv.Mat();
     cv.cvtColor(thresholdMat, dstMat, cv.COLOR_GRAY2RGBA, 4);
     try {
-      cv.addWeighted(currentMat, 1.0, dstMat, shadowValue, 0, dstMat);
+      cv.addWeighted(baseMat, 1.0, dstMat, shadowValue, 0, dstMat);
       cv.imshow(canvasRef.current, dstMat);
-      replaceCurrentMat(dstMat);
+      commitMat(dstMat, {
+        adjustmentState: buildAdjustmentState({ shadow: shadowValue }),
+      });
     } catch (error) {
       console.error("Failed to display image on canvas:", error);
       dstMat.delete();
@@ -506,17 +620,19 @@ export default function App() {
   };
 
   const handleLight = (lightValue) => {
-    if (!hasRenderableImage()) return;
+    if (!baseMat || baseMat.empty()) return;
     const grayscaleMat = new cv.Mat();
-    cv.cvtColor(currentMat, grayscaleMat, cv.COLOR_RGBA2GRAY, 4);
+    cv.cvtColor(baseMat, grayscaleMat, cv.COLOR_RGBA2GRAY, 4);
     const thresholdMat = new cv.Mat();
     cv.adaptiveThreshold(grayscaleMat, thresholdMat, 200, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 999, 2);
     const dstMat = new cv.Mat();
     cv.cvtColor(thresholdMat, dstMat, cv.COLOR_GRAY2RGBA, 4);
     try {
-      cv.addWeighted(currentMat, 1.0, dstMat, lightValue, 0, dstMat);
+      cv.addWeighted(baseMat, 1.0, dstMat, lightValue, 0, dstMat);
       cv.imshow(canvasRef.current, dstMat);
-      replaceCurrentMat(dstMat);
+      commitMat(dstMat, {
+        adjustmentState: buildAdjustmentState({ light: lightValue }),
+      });
     } catch (error) {
       console.error("Failed to display image on canvas:", error);
       dstMat.delete();
@@ -536,15 +652,15 @@ export default function App() {
   ];
 
   const sliderColor = [
-    { min: 0.8, max: 1.2, step: 0.01, title: "Saturation", initialData: 1, backgroundType: "greenToPurple", onValueChange: handleColorSaturation, commitOnRelease: true },
-    { min: MIN_COLOR_TEMPERATURE, max: MAX_COLOR_TEMPERATURE, step: 100, title: "Temperature", initialData: BASE_COLOR_TEMPERATURE, backgroundType: "blueToYellow", onValueChange: handleTempature, commitOnRelease: true, formatValue: (value) => `${Math.round(value)} K` },
+    { min: 0.8, max: 1.2, step: 0.01, title: "Saturation", initialData: saturation, backgroundType: "greenToPurple", onValueChange: handleColorSaturation, commitOnRelease: true },
+    { min: MIN_COLOR_TEMPERATURE, max: MAX_COLOR_TEMPERATURE, step: 100, title: "Temperature", initialData: tempature, backgroundType: "blueToYellow", onValueChange: handleTempature, commitOnRelease: true, formatValue: (value) => `${Math.round(value)} K` },
   ];
 
   const sliderLight = [
-    { min: -50, max: 50, step: 5, title: "Brightness", initialData: 0, onValueChange: handleBrightness, commitOnRelease: true },
-    { min: -125, max: 125, step: 5, title: "Contrast", initialData: 0, onValueChange: handleContrast, commitOnRelease: true },
-    { min: -0.5, max: 0.5, step: 0.01, title: "Shadow", initialData: 0, onValueChange: handleShadow, commitOnRelease: true },
-    { min: -0.5, max: 0.5, step: 0.01, title: "Highlight", initialData: 0, onValueChange: handleLight, commitOnRelease: true },
+    { min: -50, max: 50, step: 5, title: "Brightness", initialData: brightness, onValueChange: handleBrightness, commitOnRelease: true },
+    { min: -125, max: 125, step: 5, title: "Contrast", initialData: contrast, onValueChange: handleContrast, commitOnRelease: true },
+    { min: -0.5, max: 0.5, step: 0.01, title: "Shadow", initialData: shadow, onValueChange: handleShadow, commitOnRelease: true },
+    { min: -0.5, max: 0.5, step: 0.01, title: "Highlight", initialData: light, onValueChange: handleLight, commitOnRelease: true },
   ];
 
   const stats = [
@@ -555,6 +671,11 @@ export default function App() {
 
   const blackHandleLeft = `${(levelsRange.black / 255) * 100}%`;
   const whiteHandleLeft = `${(levelsRange.white / 255) * 100}%`;
+
+  useEffect(() => {
+    if (!src || !canvasRef.current || !currentMat) return;
+    renderCompareFrame(compareMode);
+  }, [compareMode, src, currentMat]);
 
   return (
     <div className="editor-shell">
@@ -604,18 +725,6 @@ export default function App() {
                 <IconButton label="Compare" description="Toggle before and after view" onClick={() => setCompareMode((value) => !value)}><CompareIcon /></IconButton>
                 <IconButton label="Undo" description="Step back through edit history" onClick={handleUndo}><UndoIcon /></IconButton>
               </div>
-              {compareMode && src && editedPreviewUrl && (
-                <div className="compare-grid">
-                  <div className="compare-panel">
-                    <span className="compare-label">Before</span>
-                    <img src={src} alt="Original source" className="compare-image" />
-                  </div>
-                  <div className="compare-panel">
-                    <span className="compare-label">After</span>
-                    <img src={editedPreviewUrl} alt="Edited result" className="compare-image" />
-                  </div>
-                </div>
-              )}
             </div>
             <div className="surface-panel">
               <div className="surface-panel-head compact">

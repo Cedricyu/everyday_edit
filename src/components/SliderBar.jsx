@@ -56,7 +56,9 @@ export default function SlideBar({
       </div>
       <input
         id={title}
-        onChange={(event) => setValue(parseFloat(event.target.value))}
+        onChange={(event) => {
+          setValue(parseFloat(event.target.value));
+        }}
         onPointerUp={commitValue}
         onKeyUp={commitValue}
         onBlur={commitValue}

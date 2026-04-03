@@ -1,5 +1,11 @@
 This is a [Vite](https://vitejs.dev/) + [React](https://react.dev/) project for browser-based image editing with OpenCV.js.
 
+## Live Demo
+
+Try the deployed demo here:
+
+[everyday-edit-flame.vercel.app](https://everyday-edit-flame.vercel.app/)
+
 ## Getting Started
 
 Install dependencies and start the development server:
